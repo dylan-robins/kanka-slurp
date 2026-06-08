@@ -20,6 +20,8 @@ import requests
 from urllib.parse import urljoin, urlparse
 from dotenv import load_dotenv
 from tqdm import tqdm
+import html2text
+
 
 DEFAULT_API_BASE = "https://api.kanka.io/1.0/"
 
@@ -164,16 +166,16 @@ class KankaSlurp:
                         url = val.get(candidate)
                         if url and isinstance(url, str) and url.startswith('http'):
                             # Always treat these as media and use download_image (CDN-friendly)
-                            saved = self.download_image(url, subdir=endpoint + '_files')
+                            # Save early-discovered media to a flat media/ folder.
+                            saved = self.download_image(url, subdir=os.path.join('media'))
                             if saved:
                                 downloaded += 1
         if downloaded:
             print(f"Downloaded {downloaded} files for endpoint {endpoint}")
 
     def _save_item_json(self, endpoint: str, item_id: str, data: Dict[str, Any], entity_type: Optional[str] = None):
-        base = os.path.join(self.out_dir, endpoint + '_details')
-        if entity_type:
-            base = os.path.join(base, entity_type)
+        # Simplified layout: save JSON under out/<entity_type>/
+        base = os.path.join(self.out_dir, entity_type or endpoint)
         os.makedirs(base, exist_ok=True)
         out_path = os.path.join(base, f"{item_id}.json")
         with open(out_path, 'w', encoding='utf-8') as f:
@@ -182,9 +184,8 @@ class KankaSlurp:
             print(f"Saved detail for {endpoint}/{item_id} -> {out_path}")
 
     def _save_item_html(self, endpoint: str, item_id: str, html: str, entity_type: Optional[str] = None) -> str:
-        base = os.path.join(self.out_dir, endpoint + '_details')
-        if entity_type:
-            base = os.path.join(base, entity_type)
+        # Simplified layout: save HTML under out/<entity_type>/
+        base = os.path.join(self.out_dir, entity_type or endpoint)
         os.makedirs(base, exist_ok=True)
         out_path = os.path.join(base, f"{item_id}.html")
         with open(out_path, 'w', encoding='utf-8') as f:
@@ -193,6 +194,162 @@ class KankaSlurp:
             print(f"Saved HTML for {endpoint}/{item_id} -> {out_path}")
         # return path relative to out_dir for JSON reference
         return os.path.relpath(out_path, start=self.out_dir)
+
+    def convert_html_to_markdown(self, html: str) -> str:
+        """Convert HTML to Markdown."""
+        h = html2text.HTML2Text()
+        h.ignore_images = False
+        h.body_width = 0
+        md = h.handle(html)
+        return md
+
+    def _save_item_markdown(self, endpoint: str, item_id: str, html: str, metadata: Dict[str, Any], entity_type: Optional[str] = None) -> str:
+        """Convert HTML to Markdown, prepend YAML frontmatter with metadata, and save .md file.
+
+        Returns path relative to `out_dir`.
+        """
+        # Simplified layout: save Markdown under out/<entity_type>/
+        base = os.path.join(self.out_dir, entity_type or endpoint)
+        os.makedirs(base, exist_ok=True)
+        md_body = self.convert_html_to_markdown(html)
+        # Build current md relative path for computing relative links
+        current_md_rel = os.path.join(entity_type or endpoint, f"{item_id}.md")
+        md_body = self._rewrite_image_links(md_body, endpoint, entity_type, metadata, current_md_rel)
+
+        # Build simple YAML frontmatter for LLM-oriented metadata
+        def yaml_escape(val: Any) -> str:
+            if val is None:
+                return '""'
+            if isinstance(val, (list, tuple)):
+                return '\n'.join([f"  - {str(x)}" for x in val])
+            s = str(val)
+            s = s.replace('"', '\\"')
+            return f'"{s}"'
+
+        lines = ['---']
+        # fields: id, name, image_full, tags, urls.view, updated_at
+        if 'id' in metadata:
+            lines.append(f"id: {yaml_escape(metadata.get('id'))}")
+        if 'name' in metadata:
+            lines.append(f"name: {yaml_escape(metadata.get('name'))}")
+        if 'entity_type' in metadata:
+            lines.append(f"entity_type: {yaml_escape(metadata.get('entity_type'))}")
+        if 'image_full' in metadata:
+            lines.append(f"image_full: {yaml_escape(metadata.get('image_full'))}")
+        # tags may be list
+        tags = metadata.get('tags')
+        if tags:
+            lines.append('tags:')
+            if isinstance(tags, (list, tuple)):
+                for t in tags:
+                    lines.append(f"  - {t}")
+            else:
+                lines.append(f"  - {tags}")
+        # urls.view
+        urls = metadata.get('urls') or {}
+        view = urls.get('view') if isinstance(urls, dict) else None
+        if view:
+            lines.append(f"urls_view: {yaml_escape(view)}")
+        if 'updated_at' in metadata:
+            lines.append(f"updated_at: {yaml_escape(metadata.get('updated_at'))}")
+        lines.append('---')
+
+        out_path = os.path.join(base, f"{item_id}.md")
+        title = metadata.get('name') or ''
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+            f.write('\n\n')
+            if title:
+                f.write(f'# {title}\n\n')
+            f.write(md_body)
+        if self.verbose:
+            print(f"Saved Markdown for {endpoint}/{item_id} -> {out_path}")
+        return os.path.relpath(out_path, start=self.out_dir)
+
+    def _rewrite_image_links(self, md: str, endpoint: str, entity_type: Optional[str], metadata: Dict[str, Any], current_md_rel: str) -> str:
+        """Replace image URLs in markdown or inline HTML with local relative paths if downloaded.
+
+        Looks for Markdown image syntax and <img src=> tags. Resolves filenames against
+        known download locations and rewrites URLs to local relative paths.
+        """
+        import re
+
+        def find_local_for_url(url: str) -> Optional[str]:
+            if not url or not url.startswith('http'):
+                return None
+            filename = os.path.basename(url.split('?')[0])
+            if not filename:
+                return None
+            candidates = []
+            # prefer images saved next to entity markdown: out/<entity_type>/<filename>
+            if entity_type:
+                candidates.append(os.path.join(self.out_dir, entity_type, filename))
+            # early downloads go to out/media/
+            candidates.append(os.path.join(self.out_dir, 'media', filename))
+            # fallback: top-level
+            candidates.append(os.path.join(self.out_dir, filename))
+            for p in candidates:
+                if os.path.exists(p):
+                    # return path relative to current md file directory
+                    current_md_abs = os.path.join(self.out_dir, current_md_rel)
+                    target_abs = os.path.abspath(p)
+                    rel = os.path.relpath(target_abs, start=os.path.dirname(current_md_abs))
+                    return rel
+            # last resort: search under out_dir
+            for root, dirs, files in os.walk(self.out_dir):
+                if filename in files:
+                    target_abs = os.path.abspath(os.path.join(root, filename))
+                    current_md_abs = os.path.join(self.out_dir, current_md_rel)
+                    rel = os.path.relpath(target_abs, start=os.path.dirname(current_md_abs))
+                    return rel
+            return None
+
+        # replace markdown image links: ![alt](url "title")
+        md_img_re = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+
+        def md_img_sub(match):
+            alt = match.group(1)
+            link = match.group(2).strip()
+            parts = link.split()
+            url = parts[0].strip('"')
+            local = find_local_for_url(url)
+            if local:
+                title = ''
+                if len(parts) > 1:
+                    title = ' ' + ' '.join(parts[1:])
+                return f'![{alt}]({local}{title})'
+            return match.group(0)
+
+        md = md_img_re.sub(md_img_sub, md)
+
+        # replace regular markdown links [text](url) -> where possible point to local md files
+        link_re = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+
+        def link_sub(match):
+            text = match.group(1)
+            link = match.group(2).strip()
+            parts = link.split()
+            url = parts[0].strip('"')
+            local = find_local_for_url(url)
+            if local:
+                return f'[{text}]({local})'
+            return match.group(0)
+
+        md = link_re.sub(link_sub, md)
+
+        # replace inline HTML <img src="..."> tags
+        html_img_re = re.compile(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+
+        def html_img_sub(match):
+            url = match.group(1)
+            local = find_local_for_url(url)
+            if local:
+                return f'![]({local})'
+            return match.group(0)
+
+        md = html_img_re.sub(html_img_sub, md)
+
+        return md
 
     def _determine_entity_type(self, endpoint: str, item: Dict[str, Any], payload: Dict[str, Any], api_url: Optional[str]) -> str:
         # prefer explicit payload type
@@ -275,27 +432,34 @@ class KankaSlurp:
                     html_to_save = entry_parsed or entry_html
                     # determine entity type for grouping
                     entity_type = self._determine_entity_type(endpoint, it, payload, api_url)
-                    if html_to_save:
-                        html_rel = self._save_item_html(endpoint, item_id, html_to_save, entity_type=entity_type)
-                        # reference the saved file in the JSON payload
-                        payload['entry_file'] = html_rel
-                        # add to index for index.html generation
-                        self._index.setdefault(endpoint, []).append({'name': payload.get('name') or it.get('name') or item_id, 'path': html_rel, 'type': entity_type})
                     # Download the primary image (image_full) next to the html/json and update JSON to local path
                     image_full = payload.get('image_full')
                     if image_full and isinstance(image_full, str) and image_full.startswith('http'):
-                        saved_image = self.download_image(image_full, subdir=os.path.join(endpoint + '_details', entity_type))
+                        # always use download_image for CDN-hosted media
+                        # save primary image next to the entity markdown: out/<entity_type>/
+                        saved_image = self.download_image(image_full, subdir=os.path.join(entity_type or ''))
                         if saved_image:
                             rel_image = os.path.relpath(saved_image, start=self.out_dir)
                             payload['image_full'] = rel_image
                             payload['image_file'] = rel_image
-                    else:
-                        # still add to index pointing to json if no html
-                        self._index.setdefault(endpoint, []).append({'name': payload.get('name') or it.get('name') or item_id, 'path': os.path.relpath(os.path.join(endpoint + '_details', entity_type, f"{item_id}.json"), start=self.out_dir), 'type': entity_type})
+
+                    # Ensure we always write a Markdown document (may be empty body)
+                    body_html = html_to_save or ''
+                    metadata = {
+                        'id': payload.get('id') or item_id,
+                        'name': payload.get('name') or it.get('name') or item_id,
+                        'entity_type': entity_type,
+                        'image_full': payload.get('image_full'),
+                        'tags': payload.get('tags'),
+                        'urls': payload.get('urls'),
+                        'updated_at': payload.get('updated_at'),
+                    }
+                    md_rel = self._save_item_markdown(endpoint, item_id, body_html, metadata, entity_type=entity_type)
+                    # reference the saved markdown file in the JSON payload and index
+                    payload['entry_file'] = md_rel
+                    self._index.setdefault(endpoint, []).append({'name': metadata.get('name') or item_id, 'path': md_rel, 'type': entity_type})
                     # download any files referenced in this detailed object
                     self.extract_and_download_files([payload], endpoint + '_detail')
-                # save per-item JSON (without inlined HTML)
-                self._save_item_json(endpoint, item_id, payload, entity_type=entity_type if isinstance(payload, dict) else None)
             except Exception as e:
                 print(f"Failed to fetch detail for {endpoint}/{item_id}: {e}", file=sys.stderr)
                 if self.verbose:
@@ -313,7 +477,7 @@ class KankaSlurp:
         try:
             print("Auto-discovery: fetching 'entities' to discover module endpoints")
             entities = self.fetch_paginated('entities')
-            self.save_json('entities', entities)
+            # Do not save endpoint-level JSON; produce only Markdown files for details
             self.extract_and_download_files(entities, 'entities')
             if fetch_details and entities:
                 self.fetch_items_details('entities', entities)
@@ -326,52 +490,9 @@ class KankaSlurp:
             entities = []
 
         # Step 2: discover endpoints from entities' urls.api values
-        discovered: set = set()
-        for it in entities:
-            urls = it.get('urls') or {}
-            api = urls.get('api') if isinstance(urls, dict) else None
-            if api and isinstance(api, str):
-                try:
-                    p = urlparse(api).path
-                    parts = [seg for seg in p.split('/') if seg]
-                    # find 'campaigns' and take the resource name after the campaign id
-                    if 'campaigns' in parts:
-                        idx = parts.index('campaigns')
-                        if len(parts) > idx + 2:
-                            discovered.add(parts[idx + 2])
-                    else:
-                        # fallback: last non-numeric segment
-                        for seg in reversed(parts):
-                            if not seg.isdigit():
-                                discovered.add(seg)
-                                break
-                except Exception:
-                    if self.verbose:
-                        print(f"Failed to parse api url for discovery: {api}")
-
-        # remove generic endpoints that we've already processed or shouldn't re-fetch
-        discovered.discard('entities')
-        discovered.discard('campaigns')
-
-        # Step 3: fetch each discovered module endpoint
-        for endpoint in sorted(discovered):
-            try:
-                items = self.fetch_paginated(endpoint)
-                self.save_json(endpoint, items)
-                self.extract_and_download_files(items, endpoint)
-                if fetch_details and items:
-                    self.fetch_items_details(endpoint, items)
-                summary[endpoint] = len(items)
-            except requests.HTTPError as e:
-                print(f"HTTP error fetching {endpoint}: {e}", file=sys.stderr)
-                if self.verbose:
-                    import traceback
-                    traceback.print_exc()
-            except Exception as e:
-                print(f"Error fetching {endpoint}: {e}", file=sys.stderr)
-                if self.verbose:
-                    import traceback
-                    traceback.print_exc()
+        # Do not fetch other endpoints — exporting `entities` is sufficient and
+        # other endpoints contain largely duplicated data. Finish after entities.
+        print("Skipping discovery of other endpoints; exported `entities` only.")
 
         print("Done. Summary:")
         for k, v in summary.items():
@@ -387,26 +508,24 @@ class KankaSlurp:
                 traceback.print_exc()
 
     def _generate_index(self):
-        """Generate a simple index.html under the output directory linking to saved HTML files."""
-        out_index = os.path.join(self.out_dir, 'index.html')
-        lines = ['<!doctype html>', '<html><head><meta charset="utf-8"><title>Kanka Slurp Index</title></head><body>']
-        lines.append(f'<h1>Index for {self.campaign_id}</h1>')
+        """Generate a simple index.md under the output directory linking to saved Markdown files."""
+        out_index = os.path.join(self.out_dir, 'index.md')
+        lines: List[str] = []
+        lines.append(f'# Index for {self.campaign_id}')
+        lines.append('')
         for endpoint, items in sorted(self._index.items()):
-            lines.append(f'<h2>{endpoint}</h2>')
+            lines.append(f'## {endpoint}')
             # group by type
             by_type: Dict[str, List[Dict[str, str]]] = {}
             for it in items:
                 by_type.setdefault(it.get('type') or 'unknown', []).append(it)
             for t, its in sorted(by_type.items()):
-                lines.append(f'<h3>{t}</h3>')
-                lines.append('<ul>')
+                lines.append(f'### {t}')
                 for it in sorted(its, key=lambda x: x.get('name') or ''):
-                    # link path is relative to out_dir
                     href = it['path']
                     name = it['name']
-                    lines.append(f'<li><a href="{href}">{name}</a></li>')
-                lines.append('</ul>')
-        lines.append('</body></html>')
+                    lines.append(f'- [{name}]({href})')
+                lines.append('')
         with open(out_index, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
         print(f"Wrote index to {out_index}")
