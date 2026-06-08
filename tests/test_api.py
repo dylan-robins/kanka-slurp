@@ -42,7 +42,9 @@ class FakeResponse:
         self.closed = True
 
 
-def test_download_image_closes_response_on_rejection(monkeypatch: pytest.MonkeyPatch, slurper: KankaSlurp) -> None:
+def test_download_image_closes_response_on_rejection(
+    monkeypatch: pytest.MonkeyPatch, slurper: KankaSlurp
+) -> None:
     response = FakeResponse(
         headers={
             "content-type": "text/html; charset=utf-8",
@@ -56,7 +58,9 @@ def test_download_image_closes_response_on_rejection(monkeypatch: pytest.MonkeyP
     assert response.closed is True
 
 
-def test_download_image_caches_and_closes_response(monkeypatch: pytest.MonkeyPatch, slurper: KankaSlurp) -> None:
+def test_download_image_caches_and_closes_response(
+    monkeypatch: pytest.MonkeyPatch, slurper: KankaSlurp
+) -> None:
     response = FakeResponse(
         headers={
             "content-type": "image/png",
@@ -66,15 +70,22 @@ def test_download_image_caches_and_closes_response(monkeypatch: pytest.MonkeyPat
     )
     monkeypatch.setattr("kanka_slurp.api.requests.get", Mock(return_value=response))
 
-    result = slurper.download_image("https://cdn.example.com/assets/shared.png", subdir="media")
+    result = slurper.download_image(
+        "https://cdn.example.com/assets/shared.png", subdir="media"
+    )
 
     assert result == "media/shared.png"
     assert response.closed is True
     assert (Path(slurper.out_path) / result).exists()
-    assert slurper._find_local_for_url("https://cdn.example.com/assets/shared.png") == "media/shared.png"
+    assert (
+        slurper._find_local_for_url("https://cdn.example.com/assets/shared.png")
+        == "media/shared.png"
+    )
 
 
-def test_find_local_for_url_returns_none_for_ambiguous_basenames(slurper: KankaSlurp) -> None:
+def test_find_local_for_url_returns_none_for_ambiguous_basenames(
+    slurper: KankaSlurp,
+) -> None:
     first = slurper.out_path / "alpha" / "shared.png"
     second = slurper.out_path / "beta" / "shared.png"
     first.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +125,9 @@ def test_fetch_items_details_rewrites_links_after_embedded_downloads(
         },
         chunks=[b"abcd"],
     )
-    monkeypatch.setattr("kanka_slurp.api.requests.get", Mock(return_value=image_response))
+    monkeypatch.setattr(
+        "kanka_slurp.api.requests.get", Mock(return_value=image_response)
+    )
 
     slurper.fetch_items_details(
         "entities",
@@ -136,11 +149,15 @@ def test_fetch_items_details_rewrites_links_after_embedded_downloads(
 
 
 def test_build_markdown_filename_uses_id_and_name(slurper: KankaSlurp) -> None:
-    assert slurper._build_markdown_filename("42", "Sample Entity") == "42-sample-entity.md"
+    assert (
+        slurper._build_markdown_filename("42", "Sample Entity") == "42-sample-entity.md"
+    )
     assert slurper._build_markdown_filename("42", "  ") == "42.md"
 
 
-def test_fetch_items_details_update_mode_skips_unchanged_and_rewrites_changed(tmp_path: Path) -> None:
+def test_fetch_items_details_update_mode_skips_unchanged_and_rewrites_changed(
+    tmp_path: Path,
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path), verbose=False)
 
     slurper._save_item_markdown(
@@ -210,7 +227,9 @@ def test_fetch_items_details_update_mode_skips_unchanged_and_rewrites_changed(tm
     assert "updated" in (tmp_path / "npc" / "2-new-name.md").read_text(encoding="utf-8")
 
 
-def test_fetch_paginated_uses_meta_pagination(monkeypatch: pytest.MonkeyPatch, slurper: KankaSlurp) -> None:
+def test_fetch_paginated_uses_meta_pagination(
+    monkeypatch: pytest.MonkeyPatch, slurper: KankaSlurp
+) -> None:
     page_1 = Mock()
     page_1.json.return_value = {
         "data": [{"id": 1}],

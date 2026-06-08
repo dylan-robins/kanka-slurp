@@ -13,7 +13,15 @@ from kanka_slurp.logging_config import TqdmLoggingHandler
 
 
 class ResponseStub:
-    def __init__(self, *, status_code: int = 200, headers=None, text: str = "", json_data=None, chunks=None) -> None:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        headers=None,
+        text: str = "",
+        json_data=None,
+        chunks=None,
+    ) -> None:
         self.status_code = status_code
         self.headers = headers or {}
         self.text = text
@@ -44,16 +52,21 @@ def test_init_validation_errors(tmp_path: Path) -> None:
         KankaSlurp("token", "abc", out_dir=str(tmp_path))
 
 
-def test_save_checkpoint_handles_ioerror(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_save_checkpoint_handles_ioerror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
     slurper.checkpoint = {"details__entities": ["1"]}
-    monkeypatch.setattr(Path, "write_text", Mock(side_effect=OSError("boom")))
+    write_text_mock = Mock(side_effect=OSError("boom"))
+    monkeypatch.setattr(Path, "write_text", write_text_mock)
     slurper._save_checkpoint()
 
-    Path.write_text.assert_called_once()
+    write_text_mock.assert_called_once()
 
 
-def test_get_handles_request_exception(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_get_handles_request_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
     slurper.min_interval = 0.0
     monkeypatch.setattr("kanka_slurp.api.time.sleep", Mock())
@@ -63,10 +76,15 @@ def test_get_handles_request_exception(monkeypatch: pytest.MonkeyPatch, tmp_path
         slurper._get("campaigns/123/entities")
 
 
-def test_fetch_paginated_handles_scalar_and_empty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_fetch_paginated_handles_scalar_and_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
     page_1 = Mock()
-    page_1.json.return_value = {"data": {"id": 1}, "meta": {"pagination": {"current_page": 1, "last_page": 2}}}
+    page_1.json.return_value = {
+        "data": {"id": 1},
+        "meta": {"pagination": {"current_page": 1, "last_page": 2}},
+    }
     page_2 = Mock()
     page_2.json.return_value = {"data": []}
     slurper._get = Mock(side_effect=[page_1, page_2])
@@ -74,7 +92,9 @@ def test_fetch_paginated_handles_scalar_and_empty(monkeypatch: pytest.MonkeyPatc
     assert slurper.fetch_paginated("entities") == [{"id": 1}]
 
 
-def test_fetch_paginated_falls_back_to_limit_increment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_fetch_paginated_falls_back_to_limit_increment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
     page_1 = Mock()
     page_1.json.return_value = {"data": [{"id": 1}]}
@@ -100,18 +120,39 @@ def test_find_local_for_url_unique_rglob_match(tmp_path: Path) -> None:
     nested.parent.mkdir(parents=True, exist_ok=True)
     nested.write_bytes(b"data")
 
-    assert slurper._find_local_for_url("https://cdn.example.com/unique.png") == "deep/unique.png"
+    assert (
+        slurper._find_local_for_url("https://cdn.example.com/unique.png")
+        == "deep/unique.png"
+    )
 
 
 @pytest.mark.parametrize(
     "response, url",
     [
-        (ResponseStub(headers={"content-type": "image/png", "content-length": str(MAX_IMAGE_SIZE + 1)}), "https://cdn.example.com/oversize.png"),
-        (ResponseStub(status_code=404, headers={"content-type": "image/png"}, text="missing"), "https://cdn.example.com/missing.png"),
-        (ResponseStub(headers={"content-type": "image/png", "content-length": "1"}), "https://cdn.example.com"),
+        (
+            ResponseStub(
+                headers={
+                    "content-type": "image/png",
+                    "content-length": str(MAX_IMAGE_SIZE + 1),
+                }
+            ),
+            "https://cdn.example.com/oversize.png",
+        ),
+        (
+            ResponseStub(
+                status_code=404, headers={"content-type": "image/png"}, text="missing"
+            ),
+            "https://cdn.example.com/missing.png",
+        ),
+        (
+            ResponseStub(headers={"content-type": "image/png", "content-length": "1"}),
+            "https://cdn.example.com",
+        ),
     ],
 )
-def test_download_image_rejection_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, response: ResponseStub, url: str) -> None:
+def test_download_image_rejection_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, response: ResponseStub, url: str
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
     monkeypatch.setattr("kanka_slurp.api.requests.get", Mock(return_value=response))
 
@@ -119,7 +160,9 @@ def test_download_image_rejection_paths(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert response.closed is True
 
 
-def test_download_image_exceeds_stream_limit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_download_image_exceeds_stream_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
     response = ResponseStub(
         headers={"content-type": "image/png", "content-length": "1"},
@@ -131,14 +174,18 @@ def test_download_image_exceeds_stream_limit(monkeypatch: pytest.MonkeyPatch, tm
     assert response.closed is True
 
 
-def test_convert_html_to_markdown_falls_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_convert_html_to_markdown_falls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
 
     class BrokenHTML2Text:
         def handle(self, _html):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr("kanka_slurp.api.html2text.HTML2Text", Mock(return_value=BrokenHTML2Text()))
+    monkeypatch.setattr(
+        "kanka_slurp.api.html2text.HTML2Text", Mock(return_value=BrokenHTML2Text())
+    )
 
     assert slurper.convert_html_to_markdown("<p>hi</p>") == "<p>hi</p>"
 
@@ -153,7 +200,11 @@ def test_fetch_items_details_skips_missing_and_processed_items(tmp_path: Path) -
         "entities",
         [
             {"name": "Missing id", "urls": {}},
-            {"id": 2, "name": "Processed", "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/2"}},
+            {
+                "id": 2,
+                "name": "Processed",
+                "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/2"},
+            },
         ],
     )
 
@@ -162,12 +213,20 @@ def test_fetch_items_details_skips_missing_and_processed_items(tmp_path: Path) -
 
 def test_fetch_items_details_handles_http_error(tmp_path: Path) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path))
-    response = ResponseStub(status_code=500, headers={"content-type": "application/json"}, text="boom")
+    response = ResponseStub(
+        status_code=500, headers={"content-type": "application/json"}, text="boom"
+    )
     slurper.session.get = Mock(return_value=response)
 
     slurper.fetch_items_details(
         "entities",
-        [{"id": 1, "name": "Bad", "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/1"}}],
+        [
+            {
+                "id": 1,
+                "name": "Bad",
+                "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/1"},
+            }
+        ],
     )
 
 
@@ -198,10 +257,19 @@ def test_fetch_items_details_downloads_primary_image(tmp_path: Path) -> None:
 
     slurper.fetch_items_details(
         "entities",
-        [{"id": 1, "name": "Imagey", "type": "npc", "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/1"}}],
+        [
+            {
+                "id": 1,
+                "name": "Imagey",
+                "type": "npc",
+                "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/1"},
+            }
+        ],
     )
 
-    slurper.download_image.assert_called_once_with("https://cdn.example.com/primary.png", subdir="npc")
+    slurper.download_image.assert_called_once_with(
+        "https://cdn.example.com/primary.png", subdir="npc"
+    )
     slurper.extract_and_download_files.assert_called_once()
 
 

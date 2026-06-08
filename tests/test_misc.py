@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -13,7 +14,9 @@ from kanka_slurp.parsers import ImageLinkRewriter
 
 
 class DummyResponse:
-    def __init__(self, status_code: int = 200, json_data=None, headers=None, text: str = "") -> None:
+    def __init__(
+        self, status_code: int = 200, json_data=None, headers=None, text: str = ""
+    ) -> None:
         self.status_code = status_code
         self._json_data = json_data
         self.headers = headers or {}
@@ -27,7 +30,9 @@ class DummyResponse:
             raise requests.HTTPError(f"{self.status_code} error")
 
 
-def test_load_config_from_env_reads_expected_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_from_env_reads_expected_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("KANKA_API_TOKEN", "token")
     monkeypatch.setenv("KANKA_CAMPAIGN_ID", "456")
     monkeypatch.setenv("KANKA_API_BASE", "https://example.invalid/api/")
@@ -44,17 +49,26 @@ def test_load_config_from_env_reads_expected_values(monkeypatch: pytest.MonkeyPa
 
 def test_main_wires_cli_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     slurper = Mock()
-    monkeypatch.setattr(cli, "load_config_from_env", Mock(return_value={
-        "token": "token",
-        "campaign": "456",
-        "api_base": "https://example.invalid/api/",
-    }))
-    monkeypatch.setattr(cli, "KankaSlurp", Mock(return_value=slurper))
+    kanka_ctor = Mock(return_value=slurper)
+    monkeypatch.setattr(
+        cli,
+        "load_config_from_env",
+        Mock(
+            return_value={
+                "token": "token",
+                "campaign": "456",
+                "api_base": "https://example.invalid/api/",
+            }
+        ),
+    )
+    monkeypatch.setattr(cli, "KankaSlurp", kanka_ctor)
 
-    exit_code = cli.main(["--out", "outdir", "--api-base", "https://override.invalid", "--verbose"])
+    exit_code = cli.main(
+        ["--out", "outdir", "--api-base", "https://override.invalid", "--verbose"]
+    )
 
     assert exit_code == 0
-    cli.KankaSlurp.assert_called_once_with(
+    cast(Any, kanka_ctor).assert_called_once_with(
         "token",
         "456",
         api_base="https://override.invalid",
@@ -66,12 +80,19 @@ def test_main_wires_cli_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_main_update_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     slurper = Mock()
-    monkeypatch.setattr(cli, "load_config_from_env", Mock(return_value={
-        "token": "token",
-        "campaign": "456",
-        "api_base": "https://example.invalid/api/",
-    }))
-    monkeypatch.setattr(cli, "KankaSlurp", Mock(return_value=slurper))
+    kanka_ctor = Mock(return_value=slurper)
+    monkeypatch.setattr(
+        cli,
+        "load_config_from_env",
+        Mock(
+            return_value={
+                "token": "token",
+                "campaign": "456",
+                "api_base": "https://example.invalid/api/",
+            }
+        ),
+    )
+    monkeypatch.setattr(cli, "KankaSlurp", kanka_ctor)
 
     exit_code = cli.main(["--update"])
 
@@ -113,7 +134,9 @@ def test_get_retries_after_429(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     sleep_mock = Mock()
     monkeypatch.setattr("kanka_slurp.api.time.sleep", sleep_mock)
 
-    first = DummyResponse(status_code=429, headers={"Retry-After": "1"}, text="rate limited")
+    first = DummyResponse(
+        status_code=429, headers={"Retry-After": "1"}, text="rate limited"
+    )
     second = DummyResponse(status_code=200, json_data={"ok": True}, text="ok")
     slurper.session.get = Mock(side_effect=[first, second])
 
@@ -135,21 +158,29 @@ def test_get_raises_http_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
         slurper._get("campaigns/123/entities")
 
 
-def test_determine_entity_type_prefers_payload_and_falls_back_to_url(tmp_path: Path) -> None:
+def test_determine_entity_type_prefers_payload_and_falls_back_to_url(
+    tmp_path: Path,
+) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path), verbose=False)
 
-    assert slurper._determine_entity_type(
-        "entities",
-        {"type": "Race"},
-        {"type": "NPC"},
-        "https://api.kanka.io/1.0/campaigns/123/entities/42",
-    ) == "npc"
-    assert slurper._determine_entity_type(
-        "entities",
-        {},
-        {},
-        "https://api.kanka.io/1.0/campaigns/123/races/42",
-    ) == "races"
+    assert (
+        slurper._determine_entity_type(
+            "entities",
+            {"type": "Race"},
+            {"type": "NPC"},
+            "https://api.kanka.io/1.0/campaigns/123/entities/42",
+        )
+        == "npc"
+    )
+    assert (
+        slurper._determine_entity_type(
+            "entities",
+            {},
+            {},
+            "https://api.kanka.io/1.0/campaigns/123/races/42",
+        )
+        == "races"
+    )
     assert slurper._determine_entity_type("entities", {}, {}, None) == "entities"
 
 
@@ -161,12 +192,12 @@ def test_rewrite_image_links_handles_markdown_and_html(tmp_path: Path) -> None:
 
     md = (
         '![alt](https://cdn.example.com/pic.png "title") '
-        '[text](https://cdn.example.com/pic.png) '
+        "[text](https://cdn.example.com/pic.png) "
         '<img src="https://cdn.example.com/pic.png" alt="x">'
     )
     rewritten = slurper._rewrite_image_links(md, "npc")
 
-    assert "![alt](media/pic.png \"title\")" in rewritten
+    assert '![alt](media/pic.png "title")' in rewritten
     assert "[text](media/pic.png)" in rewritten
     assert '<img src="media/pic.png" alt="x"/>' in rewritten
 
@@ -197,7 +228,9 @@ def test_slurp_orchestrates_entities_and_index(tmp_path: Path) -> None:
     slurper.fetch_items_details = Mock()
     slurper._generate_index = Mock()
     slurper.logger = Mock()
-    slurper._index = {"entities": [{"name": "A", "path": "entities/1-a.md", "type": "npc"}]}
+    slurper._index = {
+        "entities": [{"name": "A", "path": "entities/1-a.md", "type": "npc"}]
+    }
 
     slurper.slurp()
 
@@ -211,15 +244,21 @@ def test_slurp_update_mode_uses_update_mode(tmp_path: Path) -> None:
     slurper = KankaSlurp("token", "123", out_dir=str(tmp_path), verbose=False)
     slurper.fetch_paginated = Mock(return_value=[{"id": 1}])
     slurper.extract_and_download_files = Mock()
-    slurper.fetch_items_details = Mock(return_value={"updated": 1, "skipped": 0, "total": 1})
+    slurper.fetch_items_details = Mock(
+        return_value={"updated": 1, "skipped": 0, "total": 1}
+    )
     slurper._generate_index = Mock()
     slurper.logger = Mock()
-    slurper._index = {"entities": [{"name": "A", "path": "entities/1-a.md", "type": "npc"}]}
+    slurper._index = {
+        "entities": [{"name": "A", "path": "entities/1-a.md", "type": "npc"}]
+    }
 
     slurper.slurp(update=True)
 
     slurper.fetch_paginated.assert_called_once_with("entities")
-    slurper.fetch_items_details.assert_called_once_with("entities", [{"id": 1}], update_mode=True)
+    slurper.fetch_items_details.assert_called_once_with(
+        "entities", [{"id": 1}], update_mode=True
+    )
     slurper._generate_index.assert_called_once()
 
 

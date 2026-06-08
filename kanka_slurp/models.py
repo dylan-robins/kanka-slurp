@@ -8,7 +8,7 @@ import yaml
 @dataclass
 class EntityMetadata:
     """Metadata for a Kanka entity with YAML frontmatter generation."""
-    
+
     id: str
     name: str
     entity_type: str
@@ -16,10 +16,10 @@ class EntityMetadata:
     tags: Optional[List[str]] = None
     urls_view: Optional[str] = None
     updated_at: Optional[str] = None
-    
+
     def to_yaml_frontmatter(self) -> str:
         """Generate valid YAML frontmatter from dataclass.
-        
+
         Returns:
             YAML frontmatter string with --- delimiters.
         """
