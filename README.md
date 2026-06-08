@@ -1,5 +1,7 @@
 # Kanka Slurp
 
+[![CI](https://github.com/dylan-robins/kanka-slurp/actions/workflows/ci.yml/badge.svg)](https://github.com/dylan-robins/kanka-slurp/actions/workflows/ci.yml)
+
 Download a Kanka campaign into a local folder suitable for RAG.
 
 ## Quick Start
