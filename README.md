@@ -24,7 +24,7 @@ What it writes
 --------------
 
 - `index.md` — global index in Markdown linking to all saved documents.
-- Per-entity Markdown files under `<out>/entities_details/<entity_type>/<id>.md`.
+- Per-entity Markdown files under `<out>/entities_details/<entity_type>/<id>-<entityName>.md`.
 	- Each `.md` contains a YAML frontmatter with metadata: `id`, `name`, `entity_type`, `image_full` (local path), `tags`, `urls_view`, and `updated_at`.
 	- The document body is the entity's HTML converted to Markdown; the first line after frontmatter is an `# Name` H1.
 - Images and other media are downloaded into the output tree and links in the Markdown are rewritten to local relative paths.
@@ -38,4 +38,3 @@ Behavior notes
 - Requests are throttled to respect API limits (default 1 request per 2 seconds, overridable with `KANKA_MIN_INTERVAL`).
 
 If you'd like different output (JSON dumps, or include additional endpoints), tell me and I can add options.
-
