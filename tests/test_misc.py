@@ -51,7 +51,7 @@ def test_main_wires_cli_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     }))
     monkeypatch.setattr(cli, "KankaSlurp", Mock(return_value=slurper))
 
-    exit_code = cli.main(["--out", "outdir", "--api-base", "https://override.invalid", "--details", "--verbose"])
+    exit_code = cli.main(["--out", "outdir", "--api-base", "https://override.invalid", "--verbose"])
 
     assert exit_code == 0
     cli.KankaSlurp.assert_called_once_with(
@@ -61,7 +61,22 @@ def test_main_wires_cli_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
         out_dir="outdir",
         verbose=True,
     )
-    slurper.slurp.assert_called_once_with(fetch_details=True)
+    slurper.slurp.assert_called_once_with(update=False)
+
+
+def test_main_update_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    slurper = Mock()
+    monkeypatch.setattr(cli, "load_config_from_env", Mock(return_value={
+        "token": "token",
+        "campaign": "456",
+        "api_base": "https://example.invalid/api/",
+    }))
+    monkeypatch.setattr(cli, "KankaSlurp", Mock(return_value=slurper))
+
+    exit_code = cli.main(["--update"])
+
+    assert exit_code == 0
+    slurper.slurp.assert_called_once_with(update=True)
 
 
 def test_checkpoint_roundtrip(tmp_path: Path) -> None:
@@ -184,11 +199,27 @@ def test_slurp_orchestrates_entities_and_index(tmp_path: Path) -> None:
     slurper.logger = Mock()
     slurper._index = {"entities": [{"name": "A", "path": "entities/1-a.md", "type": "npc"}]}
 
-    slurper.slurp(fetch_details=True)
+    slurper.slurp()
 
     slurper.fetch_paginated.assert_called_once_with("entities")
     slurper.extract_and_download_files.assert_called_once_with([{"id": 1}], "entities")
     slurper.fetch_items_details.assert_called_once_with("entities", [{"id": 1}])
+    slurper._generate_index.assert_called_once()
+
+
+def test_slurp_update_mode_uses_update_mode(tmp_path: Path) -> None:
+    slurper = KankaSlurp("token", "123", out_dir=str(tmp_path), verbose=False)
+    slurper.fetch_paginated = Mock(return_value=[{"id": 1}])
+    slurper.extract_and_download_files = Mock()
+    slurper.fetch_items_details = Mock(return_value={"updated": 1, "skipped": 0, "total": 1})
+    slurper._generate_index = Mock()
+    slurper.logger = Mock()
+    slurper._index = {"entities": [{"name": "A", "path": "entities/1-a.md", "type": "npc"}]}
+
+    slurper.slurp(update=True)
+
+    slurper.fetch_paginated.assert_called_once_with("entities")
+    slurper.fetch_items_details.assert_called_once_with("entities", [{"id": 1}], update_mode=True)
     slurper._generate_index.assert_called_once()
 
 

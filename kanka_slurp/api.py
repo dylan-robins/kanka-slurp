@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from tqdm import tqdm
 import html2text
+import yaml
 
 from .constants import (
     DEFAULT_API_BASE,
@@ -308,6 +309,73 @@ class KankaSlurp:
             return None
         parsed = urlparse(url)
         return Path(parsed.path).name if Path(parsed.path).name else None
+
+    def _find_local_markdown_candidates(self, item_id: str) -> List[Path]:
+        """Find Markdown files that belong to a given item ID."""
+        candidates: List[Path] = []
+        for path in self.out_path.rglob("*.md"):
+            if path.name == "index.md":
+                continue
+            stem = path.stem
+            if stem == item_id or stem.startswith(f"{item_id}-"):
+                candidates.append(path)
+        return candidates
+
+    def _find_local_markdown(self, item_id: str) -> Optional[Path]:
+        """Find the best local Markdown file for an item ID."""
+        candidates = self._find_local_markdown_candidates(item_id)
+        if not candidates:
+            return None
+        exact = next((path for path in candidates if path.stem == item_id), None)
+        if exact:
+            return exact
+        if len(candidates) == 1:
+            return candidates[0]
+        self.logger.debug(
+            f"Multiple Markdown files match item {item_id}; using newest: "
+            f"{[str(path.relative_to(self.out_path)) for path in candidates]}"
+        )
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+
+    def _read_markdown_frontmatter(self, md_path: Path) -> Dict[str, Any]:
+        """Read YAML frontmatter from a Markdown file."""
+        try:
+            content = md_path.read_text(encoding='utf-8')
+        except OSError:
+            return {}
+
+        if not content.startswith('---\n'):
+            return {}
+
+        end = content.find('\n---\n', 4)
+        if end == -1:
+            return {}
+
+        raw = content[4:end]
+        try:
+            data = yaml.safe_load(raw) or {}
+        except yaml.YAMLError:
+            return {}
+
+        return data if isinstance(data, dict) else {}
+
+    def _get_local_updated_at(self, item_id: str) -> Optional[str]:
+        """Return the stored updated_at for a local entity document, if any."""
+        md_path = self._find_local_markdown(item_id)
+        if not md_path:
+            return None
+        data = self._read_markdown_frontmatter(md_path)
+        updated_at = data.get('updated_at')
+        return str(updated_at) if updated_at is not None else None
+
+    def _remove_stale_markdown_files(self, item_id: str, keep_path: Path):
+        """Remove stale Markdown files for an item after rewriting it."""
+        for path in self._find_local_markdown_candidates(item_id):
+            if path != keep_path:
+                try:
+                    path.unlink()
+                except OSError:
+                    self.logger.warning(f"Failed to remove stale Markdown file: {path}")
 
     def _find_local_for_url(self, url: str) -> Optional[str]:
         """Find local file path for a remote URL, returns relative path.
@@ -634,14 +702,17 @@ class KankaSlurp:
         
         return endpoint
 
-    def fetch_items_details(self, endpoint: str, items: List[Dict[str, Any]]):
+    def fetch_items_details(self, endpoint: str, items: List[Dict[str, Any]], update_mode: bool = False):
         """Fetch detailed page for each item and save it.
         
         Args:
             endpoint: API endpoint name.
             items: List of items to fetch details for.
+            update_mode: If True, only refresh files whose updated_at changed.
         """
         self.logger.info(f"Fetching details for {len(items)} items in {endpoint}")
+        updated = 0
+        skipped = 0
         
         for it in tqdm(items, desc=f"Details {endpoint}"):
             # Get API URL
@@ -661,9 +732,17 @@ class KankaSlurp:
                 continue
             
             # Check if already processed
-            if self._is_processed(endpoint, item_id):
+            if not update_mode and self._is_processed(endpoint, item_id):
                 self.logger.debug(f"Skipping already processed {endpoint}/{item_id}")
                 continue
+
+            if update_mode:
+                local_updated_at = self._get_local_updated_at(item_id)
+                server_updated_at = it.get('updated_at')
+                if local_updated_at and server_updated_at and str(local_updated_at) == str(server_updated_at):
+                    self.logger.debug(f"Skipping unchanged {endpoint}/{item_id}")
+                    skipped += 1
+                    continue
             
             try:
                 # Fetch the detail
@@ -723,6 +802,10 @@ class KankaSlurp:
                 # Save Markdown
                 md_rel = self._save_item_markdown(endpoint, item_id, html_to_save, metadata)
                 payload['entry_file'] = md_rel
+                updated += 1
+
+                if update_mode:
+                    self._remove_stale_markdown_files(item_id, self.out_path / md_rel)
                 
                 # Add to index
                 self._index.setdefault(endpoint, []).append({
@@ -736,6 +819,12 @@ class KankaSlurp:
                 
             except Exception as e:
                 self.logger.error(f"Failed to fetch detail for {endpoint}/{item_id}: {e}")
+
+        return {
+            'updated': updated,
+            'skipped': skipped,
+            'total': len(items),
+        }
 
     # ========================================================================
     # Index Generation
@@ -769,11 +858,11 @@ class KankaSlurp:
     # Main Slurp Method
     # ========================================================================
 
-    def slurp(self, fetch_details: bool = False):
-        """Auto-discovery mode — fetch entities and optionally their details.
+    def slurp(self, update: bool = False):
+        """Auto-discovery mode — fetch entities and always fetch entity details.
         
         Args:
-            fetch_details: If True, fetch detailed pages for each entity.
+            update: If True, refresh changed entity pages based on updated_at.
         """
         summary = {}
         
@@ -784,9 +873,11 @@ class KankaSlurp:
             # Extract and download embedded files
             self.extract_and_download_files(entities, 'entities')
             
-            # Fetch details if requested
-            if fetch_details and entities:
-                self.fetch_items_details('entities', entities)
+            # Fetch details for all entities.
+            if update and entities:
+                summary['updated'] = self.fetch_items_details('entities', entities, update_mode=True)
+            elif entities:
+                summary['details'] = self.fetch_items_details('entities', entities)
             
             summary['entities'] = len(entities)
             
@@ -806,4 +897,4 @@ class KankaSlurp:
         # Print summary
         self.logger.info("Done. Summary:")
         for k, v in summary.items():
-            self.logger.info(f" - {k}: {v} items")
+            self.logger.info(f" - {k}: {v}")

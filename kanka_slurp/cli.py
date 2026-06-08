@@ -50,8 +50,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('--out', '-o', default='data', help='Output directory')
     parser.add_argument('--dotenv', default='.env', help='Path to dotenv file')
     parser.add_argument('--api-base', help='Override API base URL')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output for debugging')
-    parser.add_argument('--details', action='store_true', help='Fetch per-item detailed pages for entities')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Verbose logging')
+    parser.add_argument('--update', action='store_true', help='Only rewrite changed entities')
     args = parser.parse_args(argv)
     
     cfg = load_config_from_env(args.dotenv)
@@ -65,5 +65,5 @@ def main(argv: Optional[List[str]] = None) -> int:
         out_dir=args.out,
         verbose=args.verbose,
     )
-    slurper.slurp(fetch_details=bool(args.details))
+    slurper.slurp(update=bool(args.update))
     return 0

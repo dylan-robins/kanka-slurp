@@ -8,6 +8,7 @@ import pytest
 import requests
 
 from kanka_slurp.api import KankaSlurp
+from kanka_slurp.models import EntityMetadata
 
 
 class FakeResponse:
@@ -137,6 +138,76 @@ def test_fetch_items_details_rewrites_links_after_embedded_downloads(
 def test_build_markdown_filename_uses_id_and_name(slurper: KankaSlurp) -> None:
     assert slurper._build_markdown_filename("42", "Sample Entity") == "42-sample-entity.md"
     assert slurper._build_markdown_filename("42", "  ") == "42.md"
+
+
+def test_fetch_items_details_update_mode_skips_unchanged_and_rewrites_changed(tmp_path: Path) -> None:
+    slurper = KankaSlurp("token", "123", out_dir=str(tmp_path), verbose=False)
+
+    slurper._save_item_markdown(
+        "entities",
+        "1",
+        "<p>unchanged</p>",
+        EntityMetadata(
+            id="1",
+            name="Kept Name",
+            entity_type="npc",
+            updated_at="2026-01-01T00:00:00Z",
+        ),
+    )
+    slurper._save_item_markdown(
+        "entities",
+        "2",
+        "<p>old</p>",
+        EntityMetadata(
+            id="2",
+            name="Old Name",
+            entity_type="npc",
+            updated_at="2026-01-01T00:00:00Z",
+        ),
+    )
+
+    changed_response = Mock()
+    changed_response.json.return_value = {
+        "data": {
+            "id": 2,
+            "name": "New Name",
+            "type": "npc",
+            "entry": "<p>updated</p>",
+            "updated_at": "2026-02-01T00:00:00Z",
+        }
+    }
+    changed_response.raise_for_status.return_value = None
+    slurper.session.get = Mock(return_value=changed_response)
+    slurper.download_image = Mock(return_value=None)
+    slurper.extract_and_download_files = Mock()
+
+    result = slurper.fetch_items_details(
+        "entities",
+        [
+            {
+                "id": 1,
+                "name": "Kept Name",
+                "type": "npc",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/1"},
+            },
+            {
+                "id": 2,
+                "name": "New Name",
+                "type": "npc",
+                "updated_at": "2026-02-01T00:00:00Z",
+                "urls": {"api": "https://api.kanka.io/1.0/campaigns/123/entities/2"},
+            },
+        ],
+        update_mode=True,
+    )
+
+    assert result == {"updated": 1, "skipped": 1, "total": 2}
+    assert slurper.session.get.call_count == 1
+    assert (tmp_path / "npc" / "1-kept-name.md").exists()
+    assert (tmp_path / "npc" / "2-new-name.md").exists()
+    assert not (tmp_path / "npc" / "2-old-name.md").exists()
+    assert "updated" in (tmp_path / "npc" / "2-new-name.md").read_text(encoding="utf-8")
 
 
 def test_fetch_paginated_uses_meta_pagination(monkeypatch: pytest.MonkeyPatch, slurper: KankaSlurp) -> None:
